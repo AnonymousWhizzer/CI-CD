@@ -1,0 +1,72 @@
+pipeline {
+    agent any
+
+    environment {
+        calculator_image   = 'yxos/calculator'
+        calculator_link    = 'https://github.com/AnonymousWhizzer/Calculator_service.git'
+        REMOTE_HOST        = '192.168.37.64'
+        registryCredential = 'repo_login'              // Docker registry credentials in Jenkins
+        build_arg          = "--build-arg HIS_IP='192.168.37.180' ."  // optional build args
+    }
+
+    stages {
+
+        stage('Checkout Source Calculator') {
+            steps {
+                script {
+                    git branch: 'main', url: calculator_link
+                }
+            }
+        }
+
+        stage('Build & Push calculator image') {
+            steps {
+                script {
+                    echo "Building image ${env.calculator_image}:${env.BUILD_NUMBER}"
+
+                    docker.withRegistry('', registryCredential) {
+                        // build with a unique tag for this build
+                        def img = docker.build(
+                            "${env.calculator_image}:${env.BUILD_NUMBER}",
+                            build_arg
+                        )
+
+                        // push this specific version
+                        img.push()
+
+                        // optionally update the "latest" tag too
+                        img.push('latest')
+                    }
+                }
+            }
+        }
+
+        stage('Update running service') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'access_key',    // SSH user/pass to master node
+                        usernameVariable: 'USER',
+                        passwordVariable: 'PASS'
+                    )
+                ]) {
+                    script {
+                        // Full image name with the build tag
+                        def newImage = "${env.calculator_image}:${env.BUILD_NUMBER}"
+
+                        sh """
+                            sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no "$USER@$REMOTE_HOST" '
+                              echo Remote connection success &&
+                              hostname &&
+                              echo Using image ${newImage} &&
+                              kubectl set image deployment/calculator-deployment calculatorserver=${newImage} &&
+                              kubectl rollout status deployment/calculator-deployment &&
+                              kubectl get pods -o wide
+                            '
+                        """
+                    }
+                }
+            }
+        }
+    }
+}
